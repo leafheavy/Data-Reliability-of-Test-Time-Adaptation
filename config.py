@@ -5,7 +5,7 @@ from typing import List
 @dataclass
 class ProbeConfig:
     # Data
-    dataset: str = "imagenet_c"  # "imagenet_c" | "cifar10_c"
+    dataset: str = "cifar10_c"  # "imagenet_c" | "cifar10_c"
     data_root: str = "/Dataset/yezhong"
     corruption_families: List[str] = field(default_factory=lambda: [
         "gaussian_noise", "shot_noise", "impulse_noise",
@@ -15,12 +15,18 @@ class ProbeConfig:
     ])
     severities: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5])
     batch_size: int = 64
-    num_workers: int = 2
+    num_workers: int = 4
     max_batches: int = 0  # 0 means no limit; useful for debug smoke tests
+    source_split: str = "train"  # clean source split for training/source statistics
+    target_split: str = "test"  # corrupted target split; ImageNet test maps to labeled val
 
     # Model
     model_name: str = "resnet50"  # "resnet50" | "resnet101" | "vit_b16"
     source_stats_path: str = "/data/source_stats"
+    model_checkpoint: str = ""  # optional clean-train checkpoint; required/auto-created for CIFAR-10
+    train_if_missing: bool = True
+    train_epochs: int = 5
+    train_lr: float = 0.01
     device: str = "cuda"
 
     # Diagnostic optimization

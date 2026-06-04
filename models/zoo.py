@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import List
 
+import os
+os.environ["TORCH_HOME"] = "/home/yezhong/baseline"
+
 from torch import nn
 from torchvision import models
 
@@ -14,15 +17,26 @@ MODEL_ZOO = {
 }
 
 
-def _load_torchvision_model(model_name: str) -> nn.Module:
+def build_model(model_name: str, num_classes: int = 1000, pretrained: bool = True) -> nn.Module:
     if model_name == "resnet50":
-        return models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if pretrained else None)
+        if num_classes != model.fc.out_features:
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+        return model
     if model_name == "resnet101":
-        return models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+        model = models.resnet101(weights=models.ResNet101_Weights.DEFAULT if pretrained else None)
+        if num_classes != model.fc.out_features:
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+        return model
     if model_name == "vit_b16":
-        return models.vit_b_16(weights=models.ViT_B_16_Weights.DEFAULT)
+        model = models.vit_b_16(weights=models.ViT_B_16_Weights.DEFAULT if pretrained else None)
+        if num_classes != model.heads.head.out_features:
+            model.heads.head = nn.Linear(model.heads.head.in_features, num_classes)
+        return model
     raise ValueError(f"Unsupported model_name '{model_name}'. Expected one of {list(MODEL_ZOO)}")
 
+def _load_torchvision_model(model_name: str) -> nn.Module:
+    return build_model(model_name, pretrained=True)
 
 def select_actmad_layers(model: nn.Module, model_name: str) -> List[str]:
     if model_name.startswith("resnet"):

@@ -17,7 +17,7 @@ from analysis.correlation import analyze_correlation
 from config import ProbeConfig
 from data.cifar10_c import get_cifar10_c_loader
 from data.imagenet_c import get_imagenet_c_loader
-from models.zoo import load_frozen_model
+from models.training import load_clean_source_model
 from probe.metrics import BatchMetrics, compute_batch_metrics
 from probe.optimize import run_probe
 
@@ -69,7 +69,7 @@ def run_full_pipeline(config: ProbeConfig) -> None:
     traj_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.csv"
 
-    model = load_frozen_model(config).to(device)
+    model = load_clean_source_model(config).to(device)
     source_stats = _load_source_stats(config)
     completed = _existing_batch_ids(metrics_path)
     new_file = not metrics_path.exists()
@@ -119,6 +119,13 @@ def main() -> None:
     parser.add_argument("--lambda1", type=float, default=1.0)
     parser.add_argument("--lambda2", type=float, default=0.0)
     parser.add_argument("--max-batches", type=int, default=0)
+    parser.add_argument("--source-split", default="train")
+    parser.add_argument("--target-split", default="test")
+    parser.add_argument("--source-stats-path", default="/data/source_stats")
+    parser.add_argument("--model-checkpoint", default="")
+    parser.add_argument("--no-train-if-missing", action="store_true")
+    parser.add_argument("--train-epochs", type=int, default=10)
+    parser.add_argument("--train-lr", type=float, default=0.01)
     args = parser.parse_args()
     config = ProbeConfig(
         dataset=args.dataset,
@@ -130,6 +137,13 @@ def main() -> None:
         lambda1=args.lambda1,
         lambda2=args.lambda2,
         max_batches=args.max_batches,
+        source_split=args.source_split,
+        target_split=args.target_split,
+        source_stats_path=args.source_stats_path,
+        model_checkpoint=args.model_checkpoint,
+        train_if_missing=not args.no_train_if_missing,
+        train_epochs=args.train_epochs,
+        train_lr=args.train_lr,
     )
     run_full_pipeline(config)
 

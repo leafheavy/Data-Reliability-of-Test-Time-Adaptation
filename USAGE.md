@@ -32,16 +32,16 @@ python -m compileall config.py data models probe analysis viz run_experiment.py
 
 | 数据集 | 用途 | 默认读取方式 |
 | --- | --- | --- |
-| `cifar10_c` | 快速调试 | 读取 `/Dataset/yezhong/cifar-10-batches-py`，在线生成 corruption |
-| `imagenet_c` | 主实验 | 读取 ImageNet clean val，在线生成 corruption；当前服务器若未下载 ImageNet，可暂时跳过 |
+| `cifar10_c` | 快速调试 | 先使用 clean CIFAR-10 train 训练/加载 10 类模型，再读取 clean CIFAR-10 test 并在线生成 corruption |
+| `imagenet_c` | 主实验 | 使用 torchvision ImageNet train 预训练权重；source stats 默认读取 clean train，target 默认读取带标签 val 作为 test proxy 并在线生成 corruption |
 
 ImageNet clean val 会按以下候选路径顺序查找：
 
 ```text
-{data_root}/imagenet/val
-{data_root}/ImageNet/val
-{data_root}/ILSVRC2012/val
-{data_root}/val
+{data_root}/imagenet/{split}
+{data_root}/ImageNet/{split}
+{data_root}/ILSVRC2012/{split}
+{data_root}/{split}
 ```
 
 数据 loader 每个 batch 返回：
@@ -82,6 +82,9 @@ python run_experiment.py \
   --dataset cifar10_c \
   --data-root /Dataset/yezhong \
   --output-dir ./outputs_debug \
+  --source-stats-path ./outputs_debug/source_stats \
+  --source-split train \
+  --target-split test \
   --batch-size 8 \
   --opt-steps 2 \
   --max-batches 1
@@ -89,18 +92,18 @@ python run_experiment.py \
 
 调试脚本会：
 
-1. 加载默认 `resnet50` 预训练模型并冻结参数；
-2. 对每个 corruption/severity 的第一个 batch 在线生成 corrupted images；
+1. 加载 clean source train 上训练好的模型：ImageNet 使用 torchvision ImageNet train 权重；CIFAR-10 会加载 `--model-checkpoint`，若缺失且未设置 `--no-train-if-missing` 则先在 clean CIFAR-10 train 上训练；
+2. 对 clean target/test split 的每个 corruption/severity 的第一个 batch 在线生成 corrupted images；
 3. 过滤误分类样本 `B_err`；
 4. 对输入 `x` 运行少量 Adam 优化步；
 5. 写出 `outputs_debug/metrics.csv` 和 `outputs_debug/traj_logs/*.pkl`；
 6. 在 `outputs_debug/analysis/` 下生成相关性、条件分析和因果对照图。
 
-> 注意：CIFAR-10 图像会 resize 到 224×224，以适配 torchvision ImageNet 预训练模型。它主要用于验证管道是否能跑通，不应作为主论文结果。
+> 注意：CIFAR-10 图像会 resize 到 224×224，以适配当前 torchvision ResNet/ViT 架构；分类头为 10 类，权重应来自 clean CIFAR-10 train，而 corruption/domain shift 只施加在 clean CIFAR-10 test 上。
 
 ## 4. Source Statistics 预计算
 
-ActMAD 需要 clean source domain 的 activation mean/variance；SPA 需要 clean source domain 的 `RAPSD_src`。请在主实验前运行预计算。
+ActMAD 需要 clean source domain 的 activation mean/variance；SPA 需要 clean source domain 的 `RAPSD_src`。这些 source statistics 默认从 clean train split 预计算，避免把 corrupted target/test 数据混入 source。请在主实验前运行预计算。
 
 ### 4.1 ImageNet source stats
 
@@ -116,7 +119,8 @@ python data/precompute_stats.py \
   --data-root /Dataset/yezhong \
   --model-name resnet50 \
   --output ./outputs/source_stats \
-  --batch-size 64
+  --batch-size 64 \
+  --source-split train
 ```
 
 输出目录为：
@@ -138,6 +142,7 @@ python data/precompute_stats.py \
   --model-name resnet50 \
   --output ./outputs_debug/source_stats \
   --batch-size 32 \
+  --source-split train \
   --max-batches 5
 ```
 
@@ -157,7 +162,10 @@ bash scripts/run_main.sh
 python run_experiment.py \
   --dataset imagenet_c \
   --data-root /Dataset/yezhong \
-  --output-dir ./outputs
+  --output-dir ./outputs \
+  --source-stats-path ./outputs/source_stats \
+  --source-split train \
+  --target-split test
 ```
 
 ### 5.2 指定模型、优化步数与 λ 参数
@@ -168,6 +176,9 @@ python run_experiment.py \
   --data-root /Dataset/yezhong \
   --model-name resnet101 \
   --output-dir ./outputs_resnet101_l2_0 \
+  --source-stats-path ./outputs/source_stats \
+  --source-split train \
+  --target-split test \
   --batch-size 64 \
   --opt-steps 100 \
   --lambda1 1.0 \
@@ -309,9 +320,9 @@ ActMAD 使用 batch activation variance。若 batch size 小于 `config.min_batc
 
 ## 10. 常见问题
 
-### Q1: `FileNotFoundError: ImageNet clean validation directory not found`
+### Q1: `FileNotFoundError: ImageNet clean split directory not found`
 
-说明当前 `data_root` 下没有可识别的 ImageNet val 目录。请改用 `--dataset cifar10_c` 做调试，或把 ImageNet val 放到文档第 1.2 节列出的候选路径之一。
+说明当前 `data_root` 下没有可识别的 ImageNet split 目录。请改用 `--dataset cifar10_c` 做调试，或把 ImageNet `train` / `val` 放到文档第 1.2 节列出的候选路径之一；`--target-split test` 会自动使用有标签的 `val` 作为测试代理。
 
 ### Q2: 为什么 `A_err/A_star` 是 NaN？
 

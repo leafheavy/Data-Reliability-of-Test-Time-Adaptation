@@ -10,28 +10,28 @@ import torch
 
 from config import ProbeConfig
 from data.cifar10_c import OnlineCIFAR10CDataset
-from data.imagenet_c import _resolve_imagenet_val_root
-from data.common import IMAGE_TRANSFORM
+from data.splits import resolve_imagenet_split_root
+from data.common import CIFAR_TRANSFORM, IMAGE_TRANSFORM
 from models.hooks import clear_activations, register_activation_hooks, remove_activation_hooks
-from models.zoo import load_frozen_model
+from models.training import load_clean_source_model
 from probe.metrics import _activation_moments, compute_rapsd
 
 
 def _clean_loader(config: ProbeConfig):
     if config.dataset == "cifar10_c":
-        ds = OnlineCIFAR10CDataset(config.data_root, "gaussian_noise", 1, train=False).base
+        ds = OnlineCIFAR10CDataset(config.data_root, "gaussian_noise", 1, split=config.source_split).base
         def collate(samples):
             xs, ys = zip(*samples)
-            return torch.stack([IMAGE_TRANSFORM(x.convert("RGB")) for x in xs]), torch.as_tensor(ys)
+            return torch.stack([CIFAR_TRANSFORM(x.convert("RGB")) for x in xs]), torch.as_tensor(ys)
         return torch.utils.data.DataLoader(ds, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers, collate_fn=collate)
     from torchvision import datasets
-    ds = datasets.ImageFolder(str(_resolve_imagenet_val_root(config.data_root)), transform=IMAGE_TRANSFORM)
+    ds = datasets.ImageFolder(str(resolve_imagenet_split_root(config.data_root, config.source_split)), transform=IMAGE_TRANSFORM)
     return torch.utils.data.DataLoader(ds, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
 
 
 def precompute_source_stats(config: ProbeConfig, max_batches: int = 0) -> Dict:
     device = torch.device(config.device if torch.cuda.is_available() and config.device == "cuda" else "cpu")
-    model = load_frozen_model(config).to(device).eval()
+    model = load_clean_source_model(config).to(device).eval()
     loader = _clean_loader(config)
     activations = register_activation_hooks(model, config.actmad_layers)
     sums = {layer: None for layer in config.actmad_layers}
@@ -82,8 +82,24 @@ def main() -> None:
     parser.add_argument("--output", default="/data/source_stats")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-batches", type=int, default=0)
+    parser.add_argument("--source-split", default="train")
+    parser.add_argument("--model-checkpoint", default="")
+    parser.add_argument("--no-train-if-missing", action="store_true")
+    parser.add_argument("--train-epochs", type=int, default=10)
+    parser.add_argument("--train-lr", type=float, default=0.01)
     args = parser.parse_args()
-    config = ProbeConfig(dataset=args.dataset, data_root=args.data_root, model_name=args.model_name, source_stats_path=args.output, batch_size=args.batch_size)
+    config = ProbeConfig(
+        dataset=args.dataset,
+        data_root=args.data_root,
+        model_name=args.model_name,
+        source_stats_path=args.output,
+        batch_size=args.batch_size,
+        source_split=args.source_split,
+        model_checkpoint=args.model_checkpoint,
+        train_if_missing=not args.no_train_if_missing,
+        train_epochs=args.train_epochs,
+        train_lr=args.train_lr,
+    )
     precompute_source_stats(config, max_batches=args.max_batches)
 
 

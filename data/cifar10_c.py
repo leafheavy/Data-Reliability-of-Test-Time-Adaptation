@@ -13,11 +13,15 @@ from data.common import CIFAR_TRANSFORM, corrupt_pil_image
 
 
 class OnlineCIFAR10CDataset(Dataset):
-    """CIFAR-10 debug dataset with online CIFAR-10-C-style corruptions."""
+    """CIFAR-10 target split with online CIFAR-10-C-style corruptions."""
 
-    def __init__(self, data_root: str | Path, corruption: str, severity: int, train: bool = False):
+    def __init__(self, data_root: str | Path, corruption: str, severity: int, split: str = "test"):
         self.data_root = Path(data_root)
-        self.base = datasets.CIFAR10(root=str(self.data_root), train=train, download=False)
+        normalized = split.lower()
+        if normalized not in {"train", "test"}:
+            raise ValueError(f"Unsupported CIFAR-10 split {split!r}. Expected 'train' or 'test'.")
+        self.split = normalized
+        self.base = datasets.CIFAR10(root=str(self.data_root), train=(normalized == "train"), download=False)
         self.corruption = corruption
         self.severity = severity
 
@@ -32,7 +36,7 @@ class OnlineCIFAR10CDataset(Dataset):
 
 
 def get_cifar10_c_loader(config: ProbeConfig, corruption: str, severity: int) -> DataLoader:
-    dataset = OnlineCIFAR10CDataset(config.data_root, corruption, severity, train=False)
+    dataset = OnlineCIFAR10CDataset(config.data_root, corruption, severity, split=config.target_split)
     return DataLoader(
         dataset,
         batch_size=config.batch_size,
