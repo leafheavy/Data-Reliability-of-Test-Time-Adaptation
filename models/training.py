@@ -40,6 +40,60 @@ def _clean_train_loader(config: ProbeConfig) -> DataLoader:
     )
 
 
+def _clean_eval_loader(config: ProbeConfig, split: str) -> DataLoader:
+    if config.dataset == "cifar10_c":
+        normalized = split.lower()
+        if normalized not in {"train", "test"}:
+            raise ValueError(f"Unsupported CIFAR-10 eval split {split!r}. Expected 'train' or 'test'.")
+        dataset = datasets.CIFAR10(
+            root=str(config.data_root),
+            train=(normalized == "train"),
+            download=False,
+            transform=CIFAR_TRANSFORM,
+        )
+    elif config.dataset == "imagenet_c":
+        dataset = datasets.ImageFolder(
+            str(resolve_imagenet_split_root(config.data_root, split)),
+            transform=IMAGE_TRANSFORM,
+        )
+    else:
+        raise ValueError(f"Unsupported dataset '{config.dataset}'")
+
+    return DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=True,
+    )
+
+
+def evaluate_clean_source_model(
+    model: nn.Module,
+    config: ProbeConfig,
+    split: str | None = None,
+    device: torch.device | str | None = None,
+) -> float:
+    """Evaluate clean source-domain top-1 accuracy and return percent accuracy."""
+
+    eval_split = split or config.eval_split
+    eval_device = torch.device(device) if device is not None else next(model.parameters()).device
+    loader = _clean_eval_loader(config, eval_split)
+    was_training = model.training
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for x, y in tqdm(loader, desc=f"Evaluating clean source ({eval_split})", unit="batch"):
+            x = x.to(eval_device).float()
+            y = y.to(eval_device).long()
+            pred = model(x).argmax(dim=1)
+            correct += int(pred.eq(y).sum().item())
+            total += int(y.numel())
+    model.train(was_training)
+    return 100.0 * correct / max(total, 1)
+
+
 def default_checkpoint_path(config: ProbeConfig) -> Path:
     return Path(config.output_dir) / "checkpoints" / f"{config.dataset}_{config.model_name}_clean_{config.source_split}.pt"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import warnings
 
 import pandas as pd
 import seaborn as sns
@@ -15,11 +16,23 @@ def analyze_correlation(metrics_df: pd.DataFrame, output_path: str) -> pd.DataFr
     setup_style()
     out = Path(output_path)
     out.mkdir(parents=True, exist_ok=True)
+    
+    # --- 增加零方差诊断检测 ---
+    for col in METRIC_COLS:
+        if col in metrics_df.columns and metrics_df[col].nunique() <= 1:
+            warnings.warn(
+                f"Metric '{col}' has zero variance (all non-NaN values are identical). "
+                f"This will cause NaN values in Spearman correlation matrices. "
+                f"Please verify if the computation pipeline for '{col}' is working correctly.",
+                UserWarning
+            )
+            
     corr = metrics_df[METRIC_COLS].corr(method="spearman")
     fig, ax = plt.subplots(figsize=(5, 4))
     sns.heatmap(corr, vmin=-1, vmax=1, annot=True, cmap="coolwarm", ax=ax)
     ax.set_title("Global Spearman correlation")
     save_figure(fig, out / "corr_global.png")
+    
     for family, group in metrics_df.groupby("corruption"):
         if len(group) < 2:
             continue

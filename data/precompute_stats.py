@@ -5,6 +5,10 @@ import pickle
 from pathlib import Path
 from typing import Dict
 
+import sys
+from pathlib import Path
+from tqdm import tqdm
+
 import numpy as np
 import torch
 
@@ -17,19 +21,60 @@ from models.training import load_clean_source_model
 from probe.metrics import _activation_moments, compute_rapsd
 
 
-def _clean_loader(config: ProbeConfig):
-    if config.dataset == "cifar10_c":
-        ds = OnlineCIFAR10CDataset(config.data_root, "gaussian_noise", 1, split=config.source_split).base
-        def collate(samples):
-            xs, ys = zip(*samples)
-            return torch.stack([CIFAR_TRANSFORM(x.convert("RGB")) for x in xs]), torch.as_tensor(ys)
-        return torch.utils.data.DataLoader(ds, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers, collate_fn=collate)
-    from torchvision import datasets
-    ds = datasets.ImageFolder(str(resolve_imagenet_split_root(config.data_root, config.source_split)), transform=IMAGE_TRANSFORM)
-    return torch.utils.data.DataLoader(ds, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
+from torchvision import datasets, transforms
 
+def _clean_loader(config: ProbeConfig):
+    # 支持 "cifar10_c" 或标准的 "cifar10"
+    if config.dataset in ["cifar10_c", "cifar10"]:
+        # 1. 确定加载的是训练集还是测试集
+        is_train = (config.source_split == "train")
+        
+        # 2. 为了保留您原代码中 x.convert("RGB") 的安全转换，我们将它与原 transform 结合
+        # 这确保了即使有单通道灰度图，也会被正确转为 3 通道 RGB
+        cifar_transform_with_rgb = transforms.Compose([
+            transforms.Lambda(lambda img: img.convert("RGB")),
+            CIFAR_TRANSFORM
+        ])
+        
+        # 3. 直接加载官方标准的干净 CIFAR-10 数据集
+        ds = datasets.CIFAR10(
+            root=config.data_root,
+            train=is_train,
+            download=True,             # 自动下载（如果本地路径不存在）
+            transform=cifar_transform_with_rgb
+        )
+        
+        # 4. 返回 DataLoader 
+        # 注意：这里去掉了 collate_fn，默认 collate 支持多进程，完全兼容 num_workers > 0
+        return torch.utils.data.DataLoader(
+            ds, 
+            batch_size=config.batch_size, 
+            shuffle=False, 
+            num_workers=config.num_workers
+        )
+        
+    # ImageNet 加载逻辑保持不变
+    from torchvision import datasets as tv_datasets
+    ds = tv_datasets.ImageFolder(
+        str(resolve_imagenet_split_root(config.data_root, config.source_split)), 
+        transform=IMAGE_TRANSFORM
+    )
+    return torch.utils.data.DataLoader(
+        ds, 
+        batch_size=config.batch_size, 
+        shuffle=False, 
+        num_workers=config.num_workers
+    )
 
 def precompute_source_stats(config: ProbeConfig, max_batches: int = 0) -> Dict:
+    load_clean_source_model(config)  # 为获取 ActMAD Layers 的 side effect 而调用
+    # --- 增加安全检查: 避免用户因未配置层名字而生成空文件 ---
+    if not config.actmad_layers:
+        raise ValueError(
+            "config.actmad_layers 为空！请确保在 ProbeConfig 实例化时传入了非空的 actmad_layers 参数，"
+            "否则无法计算和保存激活统计数据。"
+        )
+    
     device = torch.device(config.device if torch.cuda.is_available() and config.device == "cuda" else "cpu")
     model = load_clean_source_model(config).to(device).eval()
     loader = _clean_loader(config)
@@ -40,7 +85,7 @@ def precompute_source_stats(config: ProbeConfig, max_batches: int = 0) -> Dict:
     rapsd_sum = np.zeros(config.freq_bins, dtype=np.float64)
     n_batches = 0
     with torch.no_grad():
-        for batch_idx, (x, _y) in enumerate(loader):
+        for batch_idx, (x, _y) in tqdm(enumerate(loader), desc="Calculating source stats", unit="batch"):
             if max_batches and batch_idx >= max_batches:
                 break
             x = x.to(device).float()

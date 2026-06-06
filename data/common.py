@@ -22,12 +22,23 @@ CIFAR_TRANSFORM = transforms.Compose([
 ])
 
 
+# 明确列出所有合法的 corruption 方法
+VALID_CORRUPTIONS = {
+    "gaussian_noise",
+    "shot_noise",
+    "impulse_noise",
+    "defocus_blur",
+    "brightness",
+    "contrast",
+}
+
 def get_corruption_fn(name: str) -> Callable:
-    fn = getattr(corruption_method, name, None)
-    if fn is None:
-        available = [n for n in dir(corruption_method) if not n.startswith("_") and callable(getattr(corruption_method, n))]
-        raise ValueError(f"Unknown corruption '{name}'. Available online corruptions: {available}")
-    return fn
+    if name not in VALID_CORRUPTIONS:
+        raise ValueError(
+            f"Unknown corruption '{name}'. "
+            f"Valid corruptions are: {sorted(VALID_CORRUPTIONS)}"
+        )
+    return getattr(corruption_method, name)
 
 
 def corrupt_pil_image(image: Image.Image, corruption: str, severity: int) -> Image.Image:
