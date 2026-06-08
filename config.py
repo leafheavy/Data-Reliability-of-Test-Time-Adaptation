@@ -7,6 +7,8 @@ class ProbeConfig:
     # Data
     dataset: str = "cifar10_c"  # "imagenet_c" | "cifar10_c"
     data_root: str = "/Dataset/yezhong"
+    corruption_source: str = "auto"  # "auto" | "official" | "synthetic"
+    synthetic_seed: int = 1337
     corruption_families: List[str] = field(default_factory=lambda: [
         "gaussian_noise", "shot_noise", "impulse_noise",
         "defocus_blur", "glass_blur", "motion_blur", "zoom_blur",
@@ -19,10 +21,24 @@ class ProbeConfig:
     max_batches: int = 0  # 0 means no limit; useful for debug smoke tests
     source_split: str = "train"  # clean source split for training/source statistics
     target_split: str = "test"  # corrupted target split; ImageNet test maps to labeled val
+    eval_split: str = "test"
+
+    # Offline Gamma(k,l) structure measurement
+    dwt_wavelet: str = "db4"
+    dwt_levels: int = 3
+    aggregation_levels: List[str] = field(default_factory=lambda: ["pixel", "patch", "sample", "label"])
+    distance: str = "mmd"  # "mmd" | "sliced_wasserstein" | "energy"
+    mmd_gamma: float = 0.0  # 0 uses median heuristic
+    patch_size: int = 16
+    patch_stride: int = 16
+    max_descriptor_items: int = 4096
+    epsilon_bootstrap: int = 20
+    epsilon_quantile: float = 0.95
+    min_label_count: int = 2
 
     # Model
     model_name: str = "resnet50"  # "resnet50" | "resnet101" | "vit_b16"
-    source_stats_path: str = "/data/source_stats"
+    source_stats_path: str = "./outputs/source_stats"
     model_checkpoint: str = ""  # optional clean-train checkpoint; required/auto-created for CIFAR-10
     train_if_missing: bool = True
     train_epochs: int = 5

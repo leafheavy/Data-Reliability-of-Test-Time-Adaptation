@@ -20,7 +20,7 @@ def _clean_train_loader(config: ProbeConfig) -> DataLoader:
         dataset = datasets.CIFAR10(
             root=str(config.data_root),
             train=True,
-            download=False,
+            download=True,
             transform=CIFAR_TRANSFORM,
         )
     elif config.dataset == "imagenet_c":
@@ -48,7 +48,7 @@ def _clean_eval_loader(config: ProbeConfig, split: str) -> DataLoader:
         dataset = datasets.CIFAR10(
             root=str(config.data_root),
             train=(normalized == "train"),
-            download=False,
+            download=True,
             transform=CIFAR_TRANSFORM,
         )
     elif config.dataset == "imagenet_c":

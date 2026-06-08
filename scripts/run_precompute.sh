@@ -1,3 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python data/precompute_stats.py --dataset imagenet_c --data-root /Dataset/yezhong --model-name resnet50 --output ./outputs/source_stats --source-split train "$@"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
+
+python -m data.precompute_stats "$@"

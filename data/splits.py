@@ -12,27 +12,23 @@ def _first_existing(candidates: Iterable[Path]) -> Path:
     return candidates[0]
 
 
-def resolve_imagenet_split_root(data_root: str | Path, split: str) -> Path:
-    """Resolve an ImageNet split directory under common local layouts.
-
-    ``split='test'`` intentionally falls back to ``val`` because the official
-    ImageNet test split has no public labels. This codebase needs labels for the
-    corruption/domain-shift diagnostics, so the validation split is the labeled
-    test-domain proxy used by ImageNet-C-style evaluation.
-    """
-
+def imagenet_split_candidates(data_root: str | Path, split: str) -> list[Path]:
     root = Path(data_root)
+    return [
+        root / "imagenet" / split,
+        root / "ImageNet" / split,
+        root / "ILSVRC2012" / split,
+        root / split,
+    ]
+
+
+def resolve_imagenet_split_root(data_root: str | Path, split: str) -> Path:
+    """Resolve an ImageNet split directory under common local layouts."""
+
     normalized = split.lower()
     if normalized == "test":
         normalized = "val"
     if normalized not in {"train", "val"}:
         raise ValueError(f"Unsupported ImageNet split '{split}'. Expected 'train', 'val', or labeled proxy 'test'.")
 
-    return _first_existing(
-        [
-            root / "imagenet" / normalized,
-            root / "ImageNet" / normalized,
-            root / "ILSVRC2012" / normalized,
-            root / normalized,
-        ]
-    )
+    return _first_existing(imagenet_split_candidates(data_root, normalized))

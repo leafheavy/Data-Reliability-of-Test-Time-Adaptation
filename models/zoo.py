@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING # 导入 TYPE_CHECKING
 
 import os
-os.environ["TORCH_HOME"] = "/home/yezhong/baseline"
+os.environ.setdefault("TORCH_HOME", "/home/yezhong/baseline")
 
 from torch import nn
 from torchvision import models

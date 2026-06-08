@@ -22,29 +22,54 @@ CIFAR_TRANSFORM = transforms.Compose([
 ])
 
 
-# 明确列出所有合法的 corruption 方法
-VALID_CORRUPTIONS = {
+IMAGENET_C_CORRUPTIONS = (
     "gaussian_noise",
     "shot_noise",
     "impulse_noise",
     "defocus_blur",
+    "glass_blur",
+    "motion_blur",
+    "zoom_blur",
+    "snow",
+    "frost",
+    "fog",
     "brightness",
     "contrast",
-}
+    "elastic_transform",
+    "pixelate",
+    "jpeg_compression",
+)
+
+VALID_CORRUPTIONS = set(IMAGENET_C_CORRUPTIONS)
+
 
 def get_corruption_fn(name: str) -> Callable:
-    if name not in VALID_CORRUPTIONS:
+    if name not in VALID_CORRUPTIONS or not hasattr(corruption_method, name):
         raise ValueError(
-            f"Unknown corruption '{name}'. "
-            f"Valid corruptions are: {sorted(VALID_CORRUPTIONS)}"
+            f"Synthetic corruption '{name}' is unavailable. "
+            f"Available corruptions are: {sorted(SYNTHETIC_CORRUPTIONS)}"
         )
     return getattr(corruption_method, name)
 
 
-def corrupt_pil_image(image: Image.Image, corruption: str, severity: int) -> Image.Image:
+SYNTHETIC_CORRUPTIONS = {
+    name for name in VALID_CORRUPTIONS
+    if hasattr(corruption_method, name)
+}
+
+
+def corrupt_pil_image(image: Image.Image, corruption: str, severity: int, seed: int | None = None) -> Image.Image:
     fn = get_corruption_fn(corruption)
     image = image.convert("RGB")
-    arr = fn(image, severity=severity)
+    if seed is None:
+        arr = fn(image, severity=severity)
+    else:
+        state = np.random.get_state()
+        np.random.seed(seed)
+        try:
+            arr = fn(image, severity=severity)
+        finally:
+            np.random.set_state(state)
     arr = np.asarray(arr).clip(0, 255).astype(np.uint8)
     return Image.fromarray(arr)
 

@@ -1,348 +1,171 @@
-# 离线 TTA 可靠性诊断管道使用文档
+# 离线二维 Gamma 结构诊断管道使用文档
 
-本文档说明如何使用当前代码框架完成 **ImageNet-C / CIFAR-10-C 在线 corruption 诊断实验**，并生成 per-batch 的 EATA / SAR / ActMAD / SPA 指标、优化轨迹与分析图表。
+本项目当前版本对应研究计划 v3.1：**Wavelet-grounded × Hierarchical Aggregation Framework**。主线目标是离线测量 `Gamma_c(k,l)`，分析 corruption/domain shift 在物理粗粒化尺度 `k` 与数据组织层级 `l` 上的残余偏移，并进一步解释冻结模型响应与 TTA prior signals。
 
-> 重要定位：本项目实现的是 **离线诊断工具**，不是在线 TTA 算法。诊断阶段允许使用 ground-truth label 来优化输入并比较 `δ_model` 与 `δ_data`，不代表测试时在线自适应协议。
+本阶段不实现、不评估 online TTA stream、在线 buffer、在线样本选择、部署式模型更新或在线自适应协议。旧的 `x*` 输入优化仅保留为 supplement。
 
-## 1. 环境准备
+## 1. 核心定义
 
-### 1.1 Python 依赖
+数据侧比较对象固定为同一批 test samples 的 aligned pair：
 
-代码依赖 PyTorch、torchvision 与常见科学计算/可视化库。建议在具备 CUDA 的环境中安装：
+```text
+P_0 = clean reference distribution
+Q_c = corrupted/domain-shifted distribution
+Gamma_c(k,l) = D(A_l(R_k(Q_c)), A_l(R_k(P_0)))
+```
+
+其中：
+
+- `R_k`：DWT/IDWT coarse-graining，默认 `db4`，`J=3`。
+- `A_l`：`pixel / patch / sample / label` 四个组织层级 descriptor。
+- `D`：默认 RBF-MMD，可选 sliced Wasserstein 或 energy distance。
+- `epsilon_l`：clean-clean descriptor bootstrap 的 95% 分位数。
+- `k*_{data}(l)`：固定 level 后第一个进入 invariant basin 的尺度。
+
+## 运行依赖
+
+核心运行依赖：
 
 ```bash
-pip install torch torchvision numpy pandas scipy scikit-image opencv-python pillow matplotlib seaborn
+pip install torch torchvision numpy pandas scipy scikit-image opencv-python pillow tqdm
 ```
 
-如果只做静态语法检查，可运行：
+绘图依赖可选：
 
 ```bash
-python -m compileall config.py data models probe analysis viz run_experiment.py
+pip install matplotlib seaborn pyparsing
 ```
 
-### 1.2 数据目录
+若绘图依赖缺失，程序仍会写出 CSV/JSON 主结果，只跳过 heatmap。
 
-默认数据根目录在 `ProbeConfig.data_root` 中设置为：
+## 2. 推荐执行顺序
 
-```text
-/Dataset/yezhong
+### Phase 1/2：数据结构测量
+
+```bash
+python run_experiment.py \
+  --phase structure \
+  --dataset cifar10_c \
+  --data-root /Dataset/yezhong \
+  --output-dir ./outputs
 ```
 
-代码支持两类数据集：
-
-| 数据集 | 用途 | 默认读取方式 |
-| --- | --- | --- |
-| `cifar10_c` | 快速调试 | 先使用 clean CIFAR-10 train 训练/加载 10 类模型，再读取 clean CIFAR-10 test 并在线生成 corruption |
-| `imagenet_c` | 主实验 | 使用 torchvision ImageNet train 预训练权重；source stats 默认读取 clean train，target 默认读取带标签 val 作为 test proxy 并在线生成 corruption |
-
-ImageNet clean val 会按以下候选路径顺序查找：
-
-```text
-{data_root}/imagenet/{split}
-{data_root}/ImageNet/{split}
-{data_root}/ILSVRC2012/{split}
-{data_root}/{split}
-```
-
-数据 loader 每个 batch 返回：
-
-```python
-(x_corrupted, x_clean, y)
-```
-
-其中 corruption 在 `__getitem__` 阶段在线生成，不会把 ImageNet-C / CIFAR-10-C 副本缓存到磁盘。
-
-## 2. 代码结构速览
-
-```text
-config.py                 # ProbeConfig，集中管理实验参数
-data/                    # 在线 corruption 数据层与 source stats 预计算
-models/                  # 模型加载、冻结、ActMAD 层选择、activation hooks
-probe/                   # 输入优化器与 per-batch 指标计算
-analysis/                # 相关性、条件、轨迹、因果、λ2 有效性分析
-viz/                     # 公用绘图保存函数
-scripts/                 # 常用入口脚本
-run_experiment.py         # 全流程主入口
-```
-
-核心配置类是 `ProbeConfig`，默认包含 corruption 列表、severity 列表、batch size、模型名、优化步数、`lambda1/lambda2`、频域 bin 数与输出目录等参数。
-
-## 3. 快速开始：CIFAR-10-C 调试
-
-CIFAR-10-C 调试是推荐的第一步，因为它不依赖 ImageNet 数据。
+调试烟雾测试：
 
 ```bash
 bash scripts/run_debug.sh
 ```
 
-该脚本等价于运行：
+输出：
+
+```text
+outputs/gamma/gamma.csv
+outputs/gamma/gamma_summary.csv
+outputs/gamma/gamma_summary.json
+outputs/gamma/heatmaps/
+```
+
+`gamma.csv` 每行对应一个 `(corruption, severity, k, level)`：
+
+```text
+corruption, severity, k, level, gamma, epsilon, in_basin, distance
+```
+
+`gamma_summary.csv` 输出：
+
+```text
+k_star_pixel / patch / sample / label
+not_in_basin_pixel / patch / sample / label
+invariant_pairs
+basin_area
+basin_group
+```
+
+### Phase 3：冻结模型响应曲线
 
 ```bash
 python run_experiment.py \
+  --phase response \
+  --dataset imagenet_c \
+  --model-name resnet50 \
+  --data-root /Dataset/yezhong \
+  --source-stats-path ./outputs/source_stats \
+  --output-dir ./outputs
+```
+
+输出：
+
+```text
+outputs/response/response_curves.csv
+outputs/response/response_summary.csv
+```
+
+记录：
+
+```text
+Acc(k), H_bar(k), G(k), A(k), R_DWT(k)
+k_best_model, Gain_coarse
+```
+
+### Phase 6：x* supplement
+
+```bash
+python run_experiment.py \
+  --phase xstar \
   --dataset cifar10_c \
   --data-root /Dataset/yezhong \
-  --output-dir ./outputs_debug \
-  --source-stats-path ./outputs_debug/source_stats \
-  --source-split train \
-  --target-split test \
-  --batch-size 8 \
-  --opt-steps 2 \
-  --max-batches 1
+  --output-dir ./outputs
 ```
 
-调试脚本会：
-
-1. 加载 clean source train 上训练好的模型：ImageNet 使用 torchvision ImageNet train 权重；CIFAR-10 会加载 `--model-checkpoint`，若缺失且未设置 `--no-train-if-missing` 则先在 clean CIFAR-10 train 上训练；
-2. 对 clean target/test split 的每个 corruption/severity 的第一个 batch 在线生成 corrupted images；
-3. 过滤误分类样本 `B_err`；
-4. 对输入 `x` 运行少量 Adam 优化步；
-5. 写出 `outputs_debug/metrics.csv` 和 `outputs_debug/traj_logs/*.pkl`；
-6. 在 `outputs_debug/analysis/` 下生成相关性、条件分析和因果对照图。
-
-> 注意：CIFAR-10 图像会 resize 到 224×224，以适配当前 torchvision ResNet/ViT 架构；分类头为 10 类，权重应来自 clean CIFAR-10 train，而 corruption/domain shift 只施加在 clean CIFAR-10 test 上。
-
-## 4. Source Statistics 预计算
-
-ActMAD 需要 clean source domain 的 activation mean/variance；SPA 需要 clean source domain 的 `RAPSD_src`。这些 source statistics 默认从 clean train split 预计算，避免把 corrupted target/test 数据混入 source。请在主实验前运行预计算。
-
-### 4.1 ImageNet source stats
-
-```bash
-bash scripts/run_precompute.sh
-```
-
-或显式指定参数：
-
-```bash
-python data/precompute_stats.py \
-  --dataset imagenet_c \
-  --data-root /Dataset/yezhong \
-  --model-name resnet50 \
-  --output ./outputs/source_stats \
-  --batch-size 64 \
-  --source-split train
-```
-
-输出目录为：
+输出位于：
 
 ```text
-outputs/source_stats/{model_name}/
-├── activation_stats.pkl
-└── rapsd_src.npy
+outputs/xstar_supplement/
 ```
 
-### 4.2 调试版 source stats
+该结果只用于比较 `W(delta_model)` 与 `Gamma_c(k,pixel/patch)` 的一致性，不进入主线结论。
 
-如果只想先跑通 CIFAR-10-C 调试版，可运行：
+## 3. 数据对齐原则
+
+`P_0` 与 `Q_c` 必须由同一 sample index 配对得到。代码优先读取官方 corruption 数据：
+
+- `CIFAR-10-C/<corruption>.npy`
+- `ImageNet-C/<corruption>/<severity>/...`
+
+如果 `--corruption-source auto` 找不到官方数据，会使用 deterministic synthetic corruption fallback，主要用于小规模调试。正式实验建议使用：
 
 ```bash
-python data/precompute_stats.py \
-  --dataset cifar10_c \
-  --data-root /Dataset/yezhong \
-  --model-name resnet50 \
-  --output ./outputs_debug/source_stats \
-  --batch-size 32 \
-  --source-split train \
-  --max-batches 5
+--corruption-source official
 ```
 
-然后在主流程中使用相同的 `source_stats_path`。如果没有找到 source stats，主流程会用空 activation stats 和零 RAPSD source curve 继续运行；这适合调试管道，但不适合正式实验。
-
-## 5. 运行主实验
-
-### 5.1 默认 ImageNet-C 主实验
+## 4. 常用参数
 
 ```bash
-bash scripts/run_main.sh
+--corruptions gaussian_noise,brightness
+--severities 1,3,5
+--dwt-wavelet db4
+--dwt-levels 3
+--aggregation-levels pixel,patch,sample,label
+--distance mmd
+--epsilon-bootstrap 20
+--epsilon-quantile 0.95
+--max-descriptor-items 4096
+--max-batches 10
 ```
 
-等价于：
+## 5. 声明边界
 
-```bash
-python run_experiment.py \
-  --dataset imagenet_c \
-  --data-root /Dataset/yezhong \
-  --output-dir ./outputs \
-  --source-stats-path ./outputs/source_stats \
-  --source-split train \
-  --target-split test
-```
-
-### 5.2 指定模型、优化步数与 λ 参数
-
-```bash
-python run_experiment.py \
-  --dataset imagenet_c \
-  --data-root /Dataset/yezhong \
-  --model-name resnet101 \
-  --output-dir ./outputs_resnet101_l2_0 \
-  --source-stats-path ./outputs/source_stats \
-  --source-split train \
-  --target-split test \
-  --batch-size 64 \
-  --opt-steps 100 \
-  --lambda1 1.0 \
-  --lambda2 0.0
-```
-
-### 5.3 Variant A/B/C 对照
-
-实验指引中的三个变体可用以下命令运行：
-
-```bash
-# Variant A: 纯模型视角，主实验
-python run_experiment.py --dataset imagenet_c --lambda1 1.0 --lambda2 0.0 --output-dir ./outputs_varA
-
-# Variant B: 语义引导，有效性对照
-python run_experiment.py --dataset imagenet_c --lambda1 1.0 --lambda2 0.5 --output-dir ./outputs_varB
-
-# Variant C: 强引导，退化检测
-python run_experiment.py --dataset imagenet_c --lambda1 1.0 --lambda2 2.0 --output-dir ./outputs_varC
-```
-
-运行完成后，可在 Python 中调用 `analysis.validity.analyze_lambda2_effect` 比较 Variant A 与 B：
-
-```python
-import pandas as pd
-from analysis.validity import analyze_lambda2_effect
-
-metrics_varA = pd.read_csv("./outputs_varA/metrics.csv")
-metrics_varB = pd.read_csv("./outputs_varB/metrics.csv")
-analyze_lambda2_effect(metrics_varA, metrics_varB, "./outputs_validity/analysis")
-```
-
-### 5.4 灵敏度分析
-
-可用 shell loop 扫描 `lambda1 × opt_steps`：
-
-```bash
-for lambda1 in 0.5 1.0 2.0; do
-  for steps in 50 100 200; do
-    python run_experiment.py \
-      --dataset imagenet_c \
-      --model-name resnet50 \
-      --lambda1 "$lambda1" \
-      --lambda2 0.0 \
-      --opt-steps "$steps" \
-      --output-dir "./outputs_sensitivity/lambda1_${lambda1}_steps_${steps}"
-  done
-done
-```
-
-## 6. 输出文件说明
-
-主流程会在 `output_dir` 下生成：
+本代码当前只支持：
 
 ```text
-outputs/
-├── metrics.csv
-├── traj_logs/
-│   └── {corruption}_{severity}_{batch_idx}.pkl
-└── analysis/
-    ├── corr_global.png
-    ├── corr_{corruption}.png
-    ├── boxplots_by_family.png
-    ├── severity_metric_means.png
-    ├── rapsd_shift_mode_heatmap.png
-    ├── causal_groupA_stats.json
-    ├── causal_groupB_stats.json
-    └── causal_comparison.png
+offline theoretical diagnosis / offline empirical evidence
 ```
 
-`metrics.csv` 的列包括：
+不支持声明：
 
 ```text
-batch_id, model_name, corruption, severity, lambda2,
-H_err, H_star, delta_H,
-G_err, G_star, delta_G,
-A_err, A_star, delta_A,
-low_freq_ratio, cosine_sim_delta, l2_ratio_delta
-```
-
-其中：
-
-| 列 | 含义 |
-| --- | --- |
-| `H_err/H_star/delta_H` | EATA batch mean entropy before/after probe |
-| `G_err/G_star/delta_G` | SAR batch mean entropy 对模型参数梯度的 L2 norm before/after probe |
-| `A_err/A_star/delta_A` | ActMAD activation mean + variance 偏差 before/after probe |
-| `low_freq_ratio` | `δ_model` RAPSD 的低频能量占比 |
-| `cosine_sim_delta` | `δ_model` 与 `δ_data` 的平均 cosine similarity |
-| `l2_ratio_delta` | `||δ_model||₂ / ||δ_data||₂` 平均比值 |
-
-## 7. 断点续跑机制
-
-`run_experiment.py` 会检查输出目录中的 `metrics.csv`。如果某个 `batch_id` 已存在，则跳过该 batch。
-
-`batch_id` 格式为：
-
-```text
-{corruption}_{severity}_{batch_idx}
-```
-
-因此，如果实验中断，只需用相同参数重新运行同一命令即可继续。若改变 `model_name`、`lambda1`、`lambda2`、`opt_steps` 等关键设置，建议使用新的 `output_dir`，避免把不同实验配置混写到同一个 CSV。
-
-## 8. 关键实现细节与注意事项
-
-### 8.1 模型参数不会被优化
-
-`load_frozen_model` 会把所有模型参数的 `requires_grad` 设为 `False`。`run_probe` 优化器只接收输入张量 `x`，因此 Adam 更新只作用于输入。
-
-### 8.2 SAR 的 `G_bar` 是 batch 级定义
-
-`compute_G_bar` 会临时打开模型参数梯度，对整个 batch 的 mean entropy `H̄(B)` 调用 backward，然后统计所有模型参数梯度的 L2 norm。这不是逐样本梯度范数的均值。
-
-### 8.3 ActMAD 小 batch warning
-
-ActMAD 使用 batch activation variance。若 batch size 小于 `config.min_batch_size_for_actmad`，方差估计不稳定，代码会记录 warning。正式实验建议使用 `batch_size >= 32` 或默认 `64`。
-
-### 8.4 `save_xstar` 默认关闭
-
-`ProbeConfig.save_xstar=False` 时不会持久保存完整 `x*` tensor，以减少磁盘占用。指标计算仍可通过 `x_orig + delta_model` 重建 `x_star`。
-
-### 8.5 ImageNet 暂未下载时的推荐流程
-
-如果 `/Dataset/yezhong` 下暂时只有 CIFAR-10：
-
-1. 先运行 `bash scripts/run_debug.sh` 验证管道；
-2. 等 ImageNet val 准备完成后运行 `scripts/run_precompute.sh`；
-3. 再运行 `scripts/run_main.sh` 或按消融矩阵自定义命令。
-
-## 9. 推荐实验执行顺序
-
-1. **环境检查**：确认 `torch`、`torchvision`、`numpy`、`pandas`、`matplotlib`、`seaborn` 等可 import。
-2. **CIFAR-10-C debug**：运行 `bash scripts/run_debug.sh`，确认 `metrics.csv` 与图表生成。
-3. **source stats 预计算**：对目标模型运行 `data/precompute_stats.py`。
-4. **主实验**：对 `resnet50/resnet101/vit_b16` 分别运行 `lambda2=0` 主实验。
-5. **有效性对照**：对 `resnet50` 运行 `lambda2=0.5`，调用 `analyze_lambda2_effect`。
-6. **灵敏度分析**：扫描 `lambda1 ∈ {0.5,1.0,2.0}` 与 `opt_steps ∈ {50,100,200}`。
-7. **论文归纳**：优先报告跨架构一致结论；单架构结果只作为补充讨论。
-
-## 10. 常见问题
-
-### Q1: `FileNotFoundError: ImageNet clean split directory not found`
-
-说明当前 `data_root` 下没有可识别的 ImageNet split 目录。请改用 `--dataset cifar10_c` 做调试，或把 ImageNet `train` / `val` 放到文档第 1.2 节列出的候选路径之一；`--target-split test` 会自动使用有标签的 `val` 作为测试代理。
-
-### Q2: 为什么 `A_err/A_star` 是 NaN？
-
-通常是因为没有加载 source activation stats，或 `source_stats_path/{model_name}/activation_stats.pkl` 不存在。正式实验前请先运行 source stats 预计算。
-
-### Q3: 为什么运行很慢？
-
-每个 batch 都会执行输入优化，并且每步还要记录 H/G/A/SPA 轨迹；其中 SAR 的 `G_bar` 需要对模型参数做 backward，ActMAD 需要 hook forward。调试时请减小 `--batch-size`、`--opt-steps`、`--max-batches`。
-
-### Q4: 可以修改 corruption 列表吗？
-
-可以。在 Python 中实例化 `ProbeConfig` 后修改 `config.corruption_families` 和 `config.severities`，再调用 `run_full_pipeline(config)`。
-
-```python
-from config import ProbeConfig
-from run_experiment import run_full_pipeline
-
-config = ProbeConfig(dataset="cifar10_c", data_root="/Dataset/yezhong", output_dir="./outputs_subset")
-config.corruption_families = ["gaussian_noise", "brightness"]
-config.severities = [1, 3, 5]
-config.max_batches = 2
-run_full_pipeline(config)
+online TTA algorithm performance
+online stream robustness
+test-time buffer routing effectiveness
+deployed adaptation improvement
 ```
